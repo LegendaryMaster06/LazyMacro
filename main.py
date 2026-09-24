@@ -1,4 +1,7 @@
 import customtkinter as ctk
+import threading
+import time
+from pynput import mouse, keyboard
 
 ctk.set_appearance_mode("System")
 ctk.set_default_color_theme("blue")
@@ -11,8 +14,20 @@ class AutoClickerApp(ctk.CTk):
         self.geometry("600x660")
         self.resizable(False, False)
 
+        self.vcmd = (self.register(self.validate_digits), '%P')
+
         self.grid_rowconfigure(1, weight=1) 
         self.grid_columnconfigure(0, weight=1)
+
+        self.hold_var = ctk.BooleanVar(value=False)
+        self.repeat_times_var = ctk.BooleanVar(value=False)
+        self.repeat_stopped_var = ctk.BooleanVar(value=True)
+        self.ctrl_var = ctk.BooleanVar(value=False)
+        self.alt_var = ctk.BooleanVar(value=False)
+        self.shift_var = ctk.BooleanVar(value=False)
+        self.custom_var = ctk.BooleanVar(value=False)
+        self.int_offset_var = ctk.BooleanVar(value=False)
+        self.mouse_offset_var = ctk.BooleanVar(value=False)
 
         # --- GÓRNY PANEL NAWIGACYJNY ---
         self.top_frame = ctk.CTkFrame(
@@ -107,9 +122,8 @@ class AutoClickerApp(ctk.CTk):
                 default_value, label_text):
             entry = ctk.CTkEntry(
                 parent_frame, width=50, 
-                justify="center")
-            entry.insert(
-                0, default_value)
+                justify="center", placeholder_text=default_value, 
+                validate="key", validatecommand=self.vcmd)
             entry.grid(
                 row=0, column=col_index, 
                 padx=(10, 2))
@@ -129,7 +143,7 @@ class AutoClickerApp(ctk.CTk):
         self.entry_secs = create_interval_input(
             self.interval_inputs_frame, 4, "0", "Seconds")
         self.entry_ms = create_interval_input(
-            self.interval_inputs_frame, 6, "100", "Milliseconds")
+            self.interval_inputs_frame, 6, "0", "Milliseconds")
 
         # --- ZAKŁADKA AUTO CLICKER: Click Options ---
         
@@ -181,7 +195,9 @@ class AutoClickerApp(ctk.CTk):
 
         self.hold_checkbox = ctk.CTkCheckBox(
             self.left_opts_frame, 
-            text="Hold:", width=50)
+            text="Hold:", width=50,
+            variable=self.hold_var,
+            command=self.toggle_hold_logic)
         self.hold_checkbox.grid(
             row=1, column=2, 
             sticky="w", 
@@ -222,19 +238,22 @@ class AutoClickerApp(ctk.CTk):
 
         self.repeat_times_checkbox = ctk.CTkCheckBox(
             self.right_opts_frame, 
-            text="Repeat:", width=70)
+            text="Repeat:", width=70,
+            variable=self.repeat_times_var,
+            command=self.toggle_repeat_times)
         self.repeat_times_checkbox.grid(
             row=1, column=0, 
             sticky="w", pady=5)
 
         self.repeat_times_entry = ctk.CTkEntry(
             self.right_opts_frame, 
-            width=40, justify="center")
-        self.repeat_times_entry.insert(0, "1")
+            width=40, justify="center", placeholder_text="1",
+            validate="key", validatecommand=self.vcmd)
         self.repeat_times_entry.grid(
             row=1, column=1, 
             sticky="w", 
             padx=5, pady=5)
+        self.repeat_times_entry.configure(state="disabled")
         
         self.repeat_times_text = ctk.CTkLabel(
             self.right_opts_frame, text="times")
@@ -244,7 +263,9 @@ class AutoClickerApp(ctk.CTk):
 
         self.repeat_stopped_checkbox = ctk.CTkCheckBox(
             self.right_opts_frame, 
-            text="Repeat until stopped")
+            text="Repeat until stopped",
+            variable=self.repeat_stopped_var,
+            command=self.toggle_repeat_stopped)
         self.repeat_stopped_checkbox.select()
         self.repeat_stopped_checkbox.grid(
             row=2, column=0, 
@@ -277,38 +298,45 @@ class AutoClickerApp(ctk.CTk):
 
         self.ctrl_cb = ctk.CTkCheckBox(
             self.modifiers_frame, 
-            text="Ctrl", width=50)
+            text="Ctrl", width=50, variable=self.ctrl_var, 
+            command=lambda: self.toggle_modifiers("Ctrl"))
         self.ctrl_cb.grid(
             row=0, column=0, 
             padx=(0, 10))
 
         self.alt_cb = ctk.CTkCheckBox(
             self.modifiers_frame, 
-            text="Alt", width=50)
+            text="Alt", width=50, variable=self.alt_var,
+            command=lambda: self.toggle_modifiers("Alt"))
         self.alt_cb.grid(
             row=0, column=1, 
             padx=(0, 10))
 
         self.shift_cb = ctk.CTkCheckBox(
             self.modifiers_frame, 
-            text="Shift", width=60)
+            text="Shift", width=60, variable=self.shift_var,
+            command=lambda: self.toggle_modifiers("Shift"))
         self.shift_cb.grid(
             row=0, column=2, 
             padx=(0, 10))
 
         self.custom_cb = ctk.CTkCheckBox(
             self.modifiers_frame, 
-            text="Custom:", width=70)
+            text="Custom:", width=70, variable=self.custom_var,
+            command=lambda: self.toggle_modifiers("Custom"))
         self.custom_cb.grid(
             row=0, column=3, 
             padx=(0, 5))
 
         self.custom_entry = ctk.CTkEntry(
             self.modifiers_frame, 
-            width=50, justify="center")
-        self.custom_entry.insert(0, "...")
+            width=100, justify="center",
+            placeholder_text="Key")
         self.custom_entry.grid(
             row=0, column=4)
+        self.custom_entry.configure(state="disabled")
+        self.custom_entry.bind("<Key>", lambda e: "break")
+        self.custom_entry.bind("<Button-1>", self.start_binding_process)
 
         # --- ZAKŁADKA AUTO CLICKER: Dolne sekcje (Offsety i Przyciski) ---
 
@@ -332,7 +360,9 @@ class AutoClickerApp(ctk.CTk):
         self.int_offset_switch = ctk.CTkSwitch(
             self.interval_offset_frame, 
             text="Interval Offset:", 
-            font=ctk.CTkFont(weight="bold"))
+            font=ctk.CTkFont(weight="bold"), 
+            variable=self.int_offset_var, 
+            command=self.toggle_int_offset)
         self.int_offset_switch.grid(
             row=0, column=0, 
             columnspan=2, sticky="w", 
@@ -348,12 +378,13 @@ class AutoClickerApp(ctk.CTk):
 
         self.int_offset_ms_entry = ctk.CTkEntry(
             self.interval_offset_frame, 
-            width=50, justify="center")
-        self.int_offset_ms_entry.insert(0, "50")
+            width=50, justify="center", placeholder_text="50", 
+            validate="key", validatecommand=self.vcmd)
         self.int_offset_ms_entry.grid(
             row=1, column=1, 
             sticky="w", 
             padx=(0, 10), pady=(0, 10))
+        self.int_offset_ms_entry.configure(state="disabled")
 
         self.mouse_offset_frame = ctk.CTkFrame(
             self.offsets_container, 
@@ -366,7 +397,9 @@ class AutoClickerApp(ctk.CTk):
         self.mouse_offset_switch = ctk.CTkSwitch(
             self.mouse_offset_frame, 
             text="Mouse Offset:", 
-            font=ctk.CTkFont(weight="bold"))
+            font=ctk.CTkFont(weight="bold"), 
+            variable=self.mouse_offset_var, 
+            command=self.toggle_mouse_offset)
         self.mouse_offset_switch.grid(
             row=0, column=0, 
             columnspan=4, sticky="w", 
@@ -381,11 +414,12 @@ class AutoClickerApp(ctk.CTk):
 
         self.mouse_offset_x_entry = ctk.CTkEntry(
             self.mouse_offset_frame, 
-            width=40, justify="center")
-        self.mouse_offset_x_entry.insert(0, "10")
+            width=40, justify="center", placeholder_text="x",
+            validate="key", validatecommand=self.vcmd)
         self.mouse_offset_x_entry.grid(
             row=1, column=1, 
             sticky="w", pady=(0, 10))
+        self.mouse_offset_x_entry.configure(state="disabled")
 
         self.mouse_offset_y_label = ctk.CTkLabel(
             self.mouse_offset_frame, text="Y:")
@@ -396,12 +430,12 @@ class AutoClickerApp(ctk.CTk):
 
         self.mouse_offset_y_entry = ctk.CTkEntry(
             self.mouse_offset_frame, 
-            width=40, justify="center")
-        self.mouse_offset_y_entry.insert(0, "10")
+            width=40, justify="center", placeholder_text="y",
+            validate="key", validatecommand=self.vcmd)
         self.mouse_offset_y_entry.grid(
             row=1, column=3, 
             sticky="w", pady=(0, 10))
-
+        self.mouse_offset_y_entry.configure(state="disabled")
         # Kontener na przyciski Start / Stop
         self.buttons_frame = ctk.CTkFrame(
             self.auto_clicker_frame, 
@@ -445,7 +479,7 @@ class AutoClickerApp(ctk.CTk):
         self.footer_frame.grid_columnconfigure(1, weight=1)
 
         self.version_label = ctk.CTkLabel(
-            self.footer_frame, text="Version: 0.5", 
+            self.footer_frame, text="Version: 0.5.1", 
             font=ctk.CTkFont(size=10))
         self.version_label.grid(
             row=0, column=0, 
@@ -459,6 +493,60 @@ class AutoClickerApp(ctk.CTk):
             sticky="e")
         
         self.auto_clicker_frame.grid_columnconfigure(0, weight=1)
+
+    def toggle_hold_logic(self):
+        if self.hold_var.get():
+            self.click_type_combo.set("Single")
+            self.click_type_combo.configure(state="disabled")
+
+            self.repeat_times_checkbox.configure(state="disabled")
+            self.repeat_times_entry.configure(state="disabled")
+            self.repeat_stopped_checkbox.configure(state="disabled") 
+
+            self.repeat_times_var.set(False)
+            self.repeat_stopped_var.set(False)
+        else:
+            self.click_type_combo.configure(state="normal")
+            self.repeat_times_checkbox.configure(state="normal")
+            self.repeat_times_entry.configure(state="normal")
+            self.repeat_stopped_checkbox.configure(state="normal")
+
+            self.repeat_stopped_var.set(True)
+
+    def toggle_repeat_times(self):
+        if self.repeat_times_var.get():
+            self.repeat_stopped_var.set(False)
+        self.repeat_times_entry.configure(state="normal" if self.repeat_times_var.get() else "disabled")
+
+    def toggle_repeat_stopped(self):
+        if self.repeat_stopped_var.get():
+            self.repeat_times_var.set(False)
+        self.repeat_times_entry.configure(state="disabled" if self.repeat_stopped_var.get() else "normal")
+
+    def toggle_modifiers(self, active_mod):
+        if active_mod != "Ctrl":
+            self.ctrl_var.set(False)
+        if active_mod != "Alt":
+            self.alt_var.set(False)
+        if active_mod != "Shift":   
+            self.shift_var.set(False)
+        if active_mod != "Custom":
+            self.custom_var.set(False)
+
+        state = "normal" if self.custom_var.get() else "disabled"
+        self.custom_entry.configure(state=state)
+
+    def toggle_int_offset(self):
+        state = "normal" if self.int_offset_var.get() else "disabled"
+        self.int_offset_ms_entry.configure(state=state)
+
+    def toggle_mouse_offset(self):
+        state = "normal" if self.mouse_offset_var.get() else "disabled"
+        self.mouse_offset_x_entry.configure(state=state)
+        self.mouse_offset_y_entry.configure(state=state)
+
+    def validate_digits(self, new_value):
+        return new_value == "" or  new_value.isdigit()
 
     def set_mode(self, mode):
         """Metoda zarządzająca routingiem widoków i stanem przycisków."""
@@ -491,6 +579,72 @@ class AutoClickerApp(ctk.CTk):
             self.macro_frame.grid(
                 row=0, column=0, 
                 sticky="nsew")
+
+    def start_binding_process(self, event):
+        if self.custom_entry.cget("state") == "disabled":
+            return "break"
+        if getattr(self, "is_binding", False):
+            return
+        self.is_binding = True
+
+        self.custom_var.set(True)
+        self.toggle_modifiers("Custom")
+
+        self.custom_entry.delete(0, "end")
+        self.custom_entry.insert(0, "Press a key...")
+        self.custom_entry.configure(fg_color=("grey70", "grey30"))
+
+        self.update_idletasks()
+
+        threading.Thread(target=self.backgroud_listener, daemon=True).start()
+
+    def backgroud_listener(self):
+        time.sleep(0.2)
+
+        bound_key = None
+
+        def on_key_press(key):
+            nonlocal bound_key
+            try:
+                key_text = key.char
+            except AttributeError:
+                key_text = str(key).split(".")[-1]
+
+            bound_key = str(key_text).upper() if key_text is not None else ""
+            k_listener.stop()
+            m_listener.stop()
+            return False
+
+        def on_mouse_click(x, y, button, pressed):
+            nonlocal bound_key
+            if not pressed:
+                return
+            bound_key = str(button).split(".")[-1].upper()
+            k_listener.stop()
+            m_listener.stop()
+            return False
+
+        k_listener = keyboard.Listener(on_press=on_key_press)
+        m_listener = mouse.Listener(on_click=on_mouse_click)
+
+        k_listener.start()
+        m_listener.start()
+
+        k_listener.join()
+        m_listener.join()
+
+        self.after(0, lambda: self.finish_binding_process(bound_key))
+
+    def finish_binding_process(self,key_name):
+        self.is_binding = False
+
+        default_color = ctk.ThemeManager.theme["CTkEntry"]["fg_color"]
+        self.custom_entry.configure(fg_color=default_color)
+
+        self.custom_entry.delete(0, "end")
+        self.custom_entry.insert(0, key_name if key_name else "")
+
+        self.focus()
 
 if __name__ == "__main__":
     app = AutoClickerApp()
